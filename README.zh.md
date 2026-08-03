@@ -4,7 +4,9 @@
 
 Claude Code 子 agent 的静态模型路由：一张策略表、两个钉死模型的 agent、一个 deny hook（逻辑约 15 行）。没有分类器、没有代理层、没有框架——外加 26 天单人生产实测（n=1）。
 
-**账单先行**（7/3–8/3：6 天路由前基线 + 26 天系统运行——26 天内子 agent 消耗 4.97 亿 token，单用户混合真实负载；单位成本按当期价格计算，Sonnet 全程 $2/$10）：
+对 Claude Code 这个角落还不熟？一口气版本：Claude Code 干活时会悄悄雇一些帮手 AI——*子 agent*——去做搜代码、批量改文件这类边角活。默认情况下，每个帮手都按你主会话的模型计费。主模型贵，就等于拿高级工程师的时薪付实习生的活，而且屏幕上什么都不会提示。这个 repo 把实习生的活钉到实习生价位的模型上，并在失误面前加一道闸。你的用法不变；账单变。
+
+**账单先行**（7/3–8/3：6 天路由前基线 + 26 天系统运行——497M 子 agent token，单用户混合真实负载；细账见[审计命令](audit/audit-commands.md)）：
 
 | 指标 | 路由前 (7/3–7/8) | 钉档期 (7/9–7/15) | 加固期 (7/16–8/3) |
 |---|---|---|---|
@@ -14,18 +16,7 @@ Claude Code 子 agent 的静态模型路由：一张策略表、两个钉死模�
 
 **这个 repo 适合谁**：你的 Claude Code 主线程跑 Opus 或 Fable，且日常有活派给子 agent——在我的加固期窗口里，子 agent 占总输入输出流量约 15%，落在哪个模型上就按哪个计费。主线程本来就只用 Sonnet 的话，star 收藏方法就好，省不了几个钱。装之前先花 30 秒看自己的模型构成：[audit §2](audit/audit-commands.md) 一条命令粘贴即可。
 
-累计：比路由前的配比少烧约 **$1,100**——实际 $882 vs 反事实 $1,978，反事实就是 497M token × 基线单位成本 $3.98。（定量反事实：假设旧配比会烧同样的 497M token。deny 重派的开销、派发习惯的变化都没建模——把 $1,100 当数量级看，别当发票。$882 一侧是三个窗口按当期价格的实付加总；各窗口用量不均，光靠单位成本表倒推不出来。）
-
-四条测量注记——账单要经得起审才算数：
-
-- **Sonnet 在此窗口跑的是限时价 $2/$10**（2026-09-01 起恢复牌价 $3/$15）。审计文档两个价都给了；复现请用当期价。
-- **Cache 写按 1 小时 TTL 的 2× 系数计**（5 分钟 TTL 换 1.25×）。前后对比不受影响——分子分母两侧是同一个系数。
-- **单位成本 = 总支出 / 总 token**（输入、输出、cache 全部计入），所以它也随对话形态波动，不只反映模型构成。前沿模型占比那行（只按输入输出算）才是纯路由信号；这里两者同向。
-- **质量只有自述**——没埋 escalation 计数，诚实的说法是：26 天日常使用，我感觉不出和全程单模型的区别。
-
-我用的是订阅制，所有美元数字都是按 API 牌价折算的额度代理值，不是账单。比值才是重点。
-
-模型占比、分窗口单位成本、泄漏检查都能用你自己磁盘上的转录复现——见 [audit/audit-commands.md](audit/audit-commands.md)。（`scout` 那行来自逐 session 排查；转录里的 sidechain turn 不带 agent 名。）
+累计：比旧配比少烧约 **$1,100**——实际 $882 vs 反事实 $1,978（497M token × 基线单价 $3.98；数量级参考，不是发票）。单用户、订阅额度按 API 牌价折算，质量只有自述：26 天日常使用我感觉不出和全程单模型的区别。其余细账——当期价格、cache 系数、分母里到底装了什么——全放在[审计命令](audit/audit-commands.md)旁边，每个数字都能拿你自己磁盘上的转录重跑。
 
 ## 没人审计的那个默认值
 
@@ -61,11 +52,11 @@ Claude Code 的子 agent 在 agent 定义没钉模型、派发时也没显式传
 | 机械执行（方案已定，只差动手） | [`worker`](agents/worker.md) | sonnet | medium |
 | 判断（review / 设计 / 调研） | general-purpose | 显式 opus | 会话 |
 
-模型钉在 agent frontmatter 里，没人想着这张表时它也在生效。第二个维度比看上去重要：仅 `effort: low` 一项就把 scout 的输出 token 砍了 41%，侦察类活感知不到质量损失。
+模型钉在 agent frontmatter（agent 文件顶部的设置块）里，没人想着这张表时它也在生效。第二个维度比看上去重要：仅 `effort: low` 一项就把 scout 的输出 token 砍了 41%，侦察类活感知不到质量损失。
 
 **第二层——判断档内分流，由编排者自己做。** 轻判断（单文件 review、文案审、二选一）标 sonnet；重判断（架构、跨文件 review、开放式设计）标 opus；拿不准默认 opus。这就是系统里的「动态路由」部分，且完全不需要基建——见下文。
 
-**第三层——机械闸**（[hooks/agent-model-guard.sh](hooks/agent-model-guard.sh)）。挂在 Agent 工具上的 PreToolUse hook：既没用钉死模型的 agent、又没显式传 `model` 的派发一律 **deny**，拒绝理由里附路由表。编排者读到理由，带上模型重新派发。规则防习惯，闸防失误。
+**第三层——机械闸**（[hooks/agent-model-guard.sh](hooks/agent-model-guard.sh)）——一个 PreToolUse hook，即 Claude Code 在放行工具调用之前先跑的一段脚本。Claude 雇帮手时没说用哪个模型，hook 就把请求**打回**，拒绝信息里附上路由表；Claude 带上模型重发。规则防习惯，闸防失误。
 
 让便宜档保持诚实的升级规则：便宜档砸一次，直接升一档重派。绝不同档重试。
 
@@ -108,6 +99,24 @@ cp hooks/agent-model-guard.sh ~/.claude/hooks/ && chmod +x ~/.claude/hooks/agent
 冒烟测试：任意会话里，让 Claude 派一个**不带** model 的 general-purpose 子 agent。预期：派发被 deny，拒绝理由里是路由表，Claude 带上模型重新派发。测试于 Claude Code 2.1.210，2026 年 8 月。一直不 deny：查 `jq` 装没装、settings.json 里的脚本路径能不能解析、matcher 是否精确为 `Agent`——hook 的 payload schema 会随版本漂移，离 2.1.210 太远就对照 changelog。deny 了但 Claude 不重派，那是模型的服从性问题，不是 hook 的。失败模式有意设计为开放：hook 自己崩了会报错、派发照常进行——最坏情况就是回到默认行为，不会把会话搞死。
 
 安装到此为止。没有守护进程、没有代理、没有 npm。
+
+## 装完之后：日常会变什么
+
+你跟 Claude 说话的方式一点不变。照常提需求，策略段替你管派工：
+
+- 「retry 逻辑定义在哪？」→ Claude 派 `scout`——Haiku、只读——带回 file:line。
+- 「把这个重命名全仓套一遍」→ `worker`——Sonnet、只动手、不做设计决定。
+- 「好好 review 一下这个 diff」→ general-purpose agent，显式标 opus。
+
+想手动点名也随时可以：「先让 scout 把 auth 模块摸一遍」「让 worker 按 spec 改」——agent 名会变成你和 Claude 之间的共用词汇。
+
+闸门触发时，转录里长这样——是打回重来，不是报错：
+
+> agent-model-guard: this Agent call has no model and would silently inherit the main-thread model. Re-issue it with an explicit model per the routing table: judgment → opus, light judgment → sonnet, read-only recon → haiku. …
+
+Claude 读完，带上模型重新派发，活照常干。大多数时候你会发现它*从不*触发——这正是目的。
+
+每月一次（或改完配置之后），重跑 [audit §2](audit/audit-commands.md) 看两个数：前沿模型在子 agent token 里的占比（除非你点名，应该 ≈0）、模型构成有没有往你预期的方向走。
 
 ## 方法论（我会再做一遍的部分）
 

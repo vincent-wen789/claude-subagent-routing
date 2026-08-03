@@ -4,7 +4,9 @@
 
 Static model routing for Claude Code subagents: one policy table, two pinned agents, one deny hook (~15 lines of logic). No classifier, no proxy, no framework — and 26 days of single-user production receipts (n=1).
 
-**The receipts first** (Jul 3 – Aug 3: a 6-day pre-routing baseline, then 26 days on the system — 497M subagent tokens over those 26 days, one user, mixed real workload; unit costs at period prices, Sonnet $2/$10 throughout):
+New to this corner of Claude Code? The one-breath version: while working, Claude Code quietly hires helper AIs — *subagents* — for side jobs like searching your codebase or applying bulk edits. By default, every helper bills at whatever model your main session runs. If that's an expensive model, you're paying senior rates for intern work, and nothing on screen tells you. This repo pins the intern work to intern-priced models and puts a gate in front of the mistake. How you use Claude doesn't change; the billing does.
+
+**The receipts first** (Jul 3 – Aug 3: a 6-day pre-routing baseline, then 26 days on the system — 497M subagent tokens, one user, mixed real workload; fine print lives with the [audit commands](audit/audit-commands.md)):
 
 | Metric | Before (Jul 3–8) | Pinned (Jul 9–15) | Hardened (Jul 16–Aug 3) |
 |---|---|---|---|
@@ -14,18 +16,7 @@ Static model routing for Claude Code subagents: one policy table, two pinned age
 
 **Who this is for:** you run Claude Code with an Opus or Fable main thread, and work gets delegated to subagents — in my hardened window that was ~15% of total in+out token flow, billed at whatever model each spawn lands on. If your main thread is Sonnet-only, star it for the method; the dollars won't move much. Thirty seconds to see your own mix before installing anything: [audit §2](audit/audit-commands.md) is one copy-paste command.
 
-Cumulative: roughly **$1,100 less spend** than the pre-routing mix would have cost — $882 actual vs. a $1,978 counterfactual, where the counterfactual is just 497M tokens × the $3.98 baseline unit cost. (A volume-held counterfactual: it assumes the old mix would have burned the same 497M tokens. Deny-and-reissue overhead and any change in spawn habits aren't modeled — treat $1,100 as order-of-magnitude, not an invoice. The $882 side is the summed actual spend of the three windows at period prices; volume wasn't spread evenly across windows, so you can't back it out from the unit-cost rows alone.)
-
-Four measurement notes, because the receipts only count if you can audit them:
-
-- **Sonnet ran at its limited-time $2/$10 in this window** (list returns to $3/$15 on Sep 1, 2026). The audit doc ships both prices; reproduce with the period prices.
-- **Cache writes are charged at the 1-hour-TTL 2× multiplier** (swap in 1.25× for 5-minute TTL). The before/after ratio doesn't care — the same multiplier sits on both sides.
-- **Unit cost = total spend over total tokens** (input, output, and cache on both sides of the fraction), so it also moves with conversation shape, not just model mix. The frontier-share row — computed on in+out tokens only — is the routing-only signal; the two move together here.
-- **Quality is self-report only** — I didn't instrument escalation counts, so the honest phrasing is: over 26 days of daily use I couldn't tell the difference from running everything on one model.
-
-I'm on a subscription, so all dollar figures are API-list-price quota proxies, not an invoice. The ratios are the point.
-
-The model shares, window unit costs, and leak checks are reproducible from your own disk — see [audit/audit-commands.md](audit/audit-commands.md). (The per-agent `scout` row came from session-level inspection; transcripts don't tag sidechain turns with the agent name.)
+Cumulative: roughly **$1,100 less spend** than the old mix would have cost — $882 actual vs. a $1,978 counterfactual (497M tokens × the $3.98 baseline; order of magnitude, not an invoice). One user, subscription quota priced at API list rates, and quality is self-report: over 26 days of daily use I couldn't tell the difference from running everything on one model. The rest of the fine print — period pricing, cache multipliers, exactly what sits in the denominator — lives with the [audit commands](audit/audit-commands.md), where every number can be re-run against your own disk.
 
 ## The default nobody audits
 
@@ -61,11 +52,11 @@ So: frameworks route but don't enforce, hook routers enforce but bring a classif
 | Mechanical execution (plan decided, just hands) | [`worker`](agents/worker.md) | sonnet | medium |
 | Judgment (review / design / research) | general-purpose | explicit opus | session |
 
-Models are pinned in agent frontmatter, so the table holds even when nobody is thinking about it. The second dimension matters more than it looks: `effort: low` alone cut scout's output tokens 41% with no perceived quality loss on recon work.
+Models are pinned in agent frontmatter — the settings block at the top of each agent file — so the table holds even when nobody is thinking about it. The second dimension matters more than it looks: `effort: low` alone cut scout's output tokens 41% with no perceived quality loss on recon work.
 
 **Layer 2 — judgment-tier split, done by the orchestrator itself.** Light judgment (single-file review, copy review, two-way choices) gets tagged sonnet; heavy judgment (architecture, cross-file review, open-ended design) gets opus; unsure defaults to opus. This is the "dynamic routing" part of the system, and it needs no infrastructure at all — see below.
 
-**Layer 3 — the mechanical gate** ([hooks/agent-model-guard.sh](hooks/agent-model-guard.sh)). A PreToolUse hook on the Agent tool: any spawn that neither uses a pinned agent nor passes an explicit `model` is **denied**, with the routing table in the deny reason. The orchestrator reads it and re-issues the spawn with a model attached. Rules prevent habit; the gate prevents mistakes.
+**Layer 3 — the mechanical gate** ([hooks/agent-model-guard.sh](hooks/agent-model-guard.sh)) — a PreToolUse hook, i.e. a script Claude Code runs before letting a tool call through. If Claude tries to hire a helper without naming a model, the hook **denies** the request and hands the routing table back in the rejection message; Claude re-sends it with a model attached. Rules prevent habit; the gate prevents mistakes.
 
 Escalation rule that keeps the cheap tiers honest: if a cheap tier botches a task once, re-dispatch one tier up. Never retry at the same tier.
 
@@ -108,6 +99,24 @@ Notes that save you a bug report:
 Smoke test: in any session, ask Claude to spawn a general-purpose subagent *without* specifying a model. Expected: the spawn is denied, the deny reason echoes the routing table, and Claude re-issues it with a model attached. Tested on Claude Code 2.1.210, Aug 2026. If it never denies: check `jq` is installed, the script path in settings.json resolves, and the matcher is exactly `Agent` — hook payload schemas can drift between versions, so diff against the changelog if you're far from 2.1.210. If it denies but Claude doesn't re-issue, that's model compliance, not the hook. Failure mode is open by design: a crashing hook surfaces an error and the spawn proceeds — worst case is stock behavior, not a bricked session.
 
 That's the whole install. No daemon, no proxy, no npm.
+
+## Day two: what actually changes
+
+Nothing about how you talk to Claude. You ask for what you want; the policy block steers the delegation:
+
+- *"Where is the retry logic defined?"* → Claude sends `scout` — Haiku, read-only — and gets file:line back.
+- *"Apply that rename across the repo"* → `worker` — Sonnet, hands only, no design decisions.
+- *"Review this diff properly"* → a general-purpose agent, explicitly tagged opus.
+
+You can also route by hand whenever you feel like it: *"send scout to map the auth module first"*, *"have worker apply the spec"* — the agent names become shared vocabulary between you and Claude.
+
+When the gate fires, it looks like this in the transcript — a bounced request, not an error:
+
+> agent-model-guard: this Agent call has no model and would silently inherit the main-thread model. Re-issue it with an explicit model per the routing table: judgment → opus, light judgment → sonnet, read-only recon → haiku. …
+
+Claude reads that, re-issues with a model, and the work continues. Mostly you'll notice it *never* firing — that's the point.
+
+Once a month (or after changing your setup), re-run [audit §2](audit/audit-commands.md) and check two numbers: the frontier model's share of subagent tokens (should be ~0 unless you asked for it by name) and whether the model mix is drifting where you expect.
 
 ## The method (what I'd do again)
 

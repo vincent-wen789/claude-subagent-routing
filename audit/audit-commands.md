@@ -2,10 +2,15 @@
 
 Claude Code writes every session transcript to `~/.claude/projects/**/*.jsonl`. Subagent activity is marked `isSidechain: true`, with the model and token usage on each assistant turn. That's enough to verify, from your own disk, which models your subagents actually ran on and what they cost — no telemetry, no third-party tool.
 
-Two caveats before you start:
+The fine print — read this once before comparing numbers (the README's headline figures all carry these definitions):
 
 - **Transcripts are cleaned up after ~30 days.** Baselines you don't snapshot in time are gone forever. Run the audit *before* you change anything, save the numbers, then re-run after.
 - On a subscription plan these numbers are a **quota proxy priced at API list rates**, not an invoice. The ratios (model shares, before/after) are what matter.
+- **Sonnet ran at its limited-time $2/$10** during the README's measurement window; list price returns to $3/$15 on Sep 1, 2026. §3 ships both prices — reproduce the README with the period prices.
+- **Cache writes are billed at 2× the input price on the 1-hour TTL** (1.25× for 5-minute TTL). Before/after comparisons don't care — the same multiplier sits on both sides.
+- **Unit cost (§3) = total spend over total tokens**, cache included on both sides of the fraction — so it also moves with conversation shape. **Model shares (§2) use in+out tokens only** — that's the routing-only signal. Read them together.
+- **The README's counterfactual is volume-held**: it assumes the old mix would have burned the same 497M tokens; deny-and-reissue overhead and changed spawn habits aren't modeled. Its $882 actual is the summed spend of three windows whose volumes were uneven — it can't be backed out from the unit-cost rows alone.
+- **Quality was not instrumented** — no escalation counts, no blinded comparison; the README's quality claim is self-report and labeled as such.
 
 ## 1. Token totals by model (all subagent turns on disk)
 

@@ -50,11 +50,11 @@ Claude Code のサブエージェントは、エージェント定義にモデ�
 |---|---|---|---|
 | 読み取り専用の偵察（走査/検索/読解/要約） | [`scout`](agents/scout.md) | haiku | low |
 | 機械的実行（方針決定済み、手を動かすだけ） | [`worker`](agents/worker.md) | sonnet | medium |
-| 判断（レビュー/設計/リサーチ） | general-purpose | 明示 opus | セッション |
+| 判断（レビュー/設計/リサーチ） | [`judge`](agents/judge.md) | opus（固定） | セッション |
 
 モデルはエージェントの frontmatter——エージェントファイル冒頭の設定ブロック——に固定されているので、誰もこの表を意識していない時も効き続けます。第二の次元は見た目以上に効きます：`effort: low` だけで scout の出力トークンが 41% 減、偵察タスクでは体感品質の低下なし。
 
-**第二層——判断ティア内の振り分けは、オーケストレーター自身がやる。** 軽い判断（単一ファイルのレビュー、コピーの確認、二択）は sonnet 指定。重い判断（アーキテクチャ、複数ファイル横断レビュー、オープンエンドな設計）は opus 指定。迷ったら opus。これがこのシステムの「動的ルーティング」部分で、インフラは一切不要——後述の通り。
+**第二層——判断ティア内の振り分けは、オーケストレーター自身がやる。** 軽い判断（単一ファイルのレビュー、コピーの確認、二択）は `judge` を明示 sonnet でダウングレードして起動。重い判断（アーキテクチャ、複数ファイル横断レビュー、オープンエンドな設計）は `judge` のデフォルト opus のまま。迷ったらタグなし——今はタグなしでも安全に opus に落ちます。これがこのシステムの「動的ルーティング」部分で、インフラは一切不要——後述の通り。
 
 **第三層——機械のゲート**（[hooks/agent-model-guard.sh](hooks/agent-model-guard.sh)）——PreToolUse フック、つまり Claude Code がツール呼び出しを通す前に走らせるスクリプトです。Claude がモデルを告げずにヘルパーを雇おうとすると、フックはリクエストを**差し戻し**、拒否メッセージにルーティング表を添える。Claude はモデル付きで再送します。規則は習慣を防ぎ、ゲートはミスを防ぐ。
 
@@ -62,11 +62,11 @@ Claude Code のサブエージェントは、エージェント定義にモデ�
 
 ## インストール
 
-ファイル 3 つ、settings 設定 1 箇所、ポリシー 1 ブロック。この repo の clone 内で実行（フックは `jq` に依存——`command -v jq` で確認を）：
+ファイル 4 つ、settings 設定 1 箇所、ポリシー 1 ブロック。この repo の clone 内で実行（フックは `jq` に依存——`command -v jq` で確認を）：
 
 ```bash
 mkdir -p ~/.claude/agents ~/.claude/hooks
-cp agents/scout.md agents/worker.md ~/.claude/agents/
+cp agents/scout.md agents/worker.md agents/judge.md ~/.claude/agents/
 cp hooks/agent-model-guard.sh ~/.claude/hooks/ && chmod +x ~/.claude/hooks/agent-model-guard.sh
 ```
 
@@ -93,7 +93,7 @@ issue を立てる前に読むと救われる注意点：
 
 - **インストール後は Claude Code を再起動**——エージェント定義はセッション開始時に読み込まれます。
 - **`CLAUDE_CODE_SUBAGENT_MODEL` は未設定のまま**——frontmatter をグローバルに上書きし、固定を静かに無効化します。
-- **エージェント名はプロジェクト優先で解決。** プロジェクトに独自の `scout`/`worker` があると `~/.claude/agents/` に勝ちます。この 2 つの名前は自分の環境で一意に保ち、独自の固定エージェントを足すならフックの許可リスト（`scout|worker|fork`）も拡張を。
+- **エージェント名はプロジェクト優先で解決。** プロジェクトに独自の `scout`/`worker`/`judge` があると `~/.claude/agents/` に勝ちます。これらの名前は自分の環境で一意に保ち、独自の固定エージェントを足すならフックの許可リスト（`scout|worker|judge|fork`）も拡張を。
 - **フックが検証するのは起動リクエストであって、最終的に解決されたモデルではない。** 封じるのは「タグ忘れ」という failure mode——私の測定ではリークの全てがこれでした——であり、考えうる全ての設定ミスではありません。
 
 スモークテスト：任意のセッションで、model を**指定せずに** general-purpose サブエージェントを起動するよう Claude に頼む。期待動作：起動が deny され、拒否理由にルーティング表が表示され、Claude がモデル付きで再発行する。Claude Code 2.1.210（2026 年 8 月）で検証済み。一向に deny されない場合：`jq` の有無、settings.json のスクリプトパスの解決、matcher が正確に `Agent` かを確認——フックのペイロードスキーマはバージョン間でドリフトするため、2.1.210 から遠い場合は changelog と突き合わせてください。deny はされるが再発行されない場合、それはモデルの従順さの問題で、フックの問題ではありません。失敗モードは意図的にオープン設計：フック自体がクラッシュしてもエラー表示の上で起動は通ります——最悪ケースは素の挙動に戻るだけで、セッションが使えなくなることはありません。
@@ -106,13 +106,13 @@ Claude への話しかけ方は、何も変わりません。普段どおり頼�
 
 - 「retry ロジックはどこで定義されてる？」→ Claude は `scout` を送る——Haiku、読み取り専用——file:line が返ってくる。
 - 「このリネームをリポジトリ全体に適用して」→ `worker`——Sonnet、手を動かすだけ、設計判断はしない。
-- 「この diff をちゃんとレビューして」→ general-purpose エージェント、明示 opus 指定。
+- 「この diff をちゃんとレビューして」→ `judge`——frontmatter で opus 固定。軽いレビューは明示 sonnet でダウングレード。
 
 手動で名指ししても構いません：「まず scout に auth モジュールを偵察させて」「worker に spec どおり直させて」——エージェント名は、あなたと Claude の共通語彙になります。
 
 ゲートが発火すると、トランスクリプトにはこう出ます——エラーではなく、差し戻しです：
 
-> agent-model-guard: this Agent call has no model and would silently inherit the main-thread model. Re-issue it with an explicit model per the routing table: judgment → opus, light judgment → sonnet, read-only recon → haiku. …
+> agent-model-guard: this Agent call has no model and would silently inherit the main-thread model. Re-issue it per the routing table: judgment → judge (opus pinned; tag sonnet for light judgment), mechanical execution → worker, read-only recon → scout. …
 
 Claude はそれを読み、モデル付きで再発行し、作業は続きます。ほとんどの場合、*発火しない*ことに気づくはず——それが狙いです。
 
@@ -131,6 +131,10 @@ Claude はそれを読み、モデル付きで再発行し、作業は続きま�
 - **書き換え式の強制なし。** Deny→再発行はオーケストレーターをループ内に留め、他のフックとも安全に共存します。`updatedInput` による spawn パラメータの書き換えは、複数フック発火時のマージ順序が未文書化（router-hook プロジェクト自身の README が認めています）。収束する証拠：junoseong の deny 式フックはテストタスクで **25.3k → 11.4k トークン** を計測。
 - **ティアの細分化なし。** 強化後に残る伸び代は小銭拾いです。ティアを増やすたびに、数セントの上振れのために分類負担と誤ルーティング面が増える。
 - **クロスベンダーのプロキシなし。** [claude-code-router](https://github.com/musistudio/claude-code-router) の類が解くのは別の問題（バックエンドの差し替え）です。本システムは単一ベンダー・単一サブスクリプションの内側に留まる——上の数字がクリーンなのは、まさにそのおかげです。
+
+## 更新（2026-08-09）：規律頼みだった最後のティアも固定した
+
+上のルーティング表の判断行は、もともと「general-purpose + opus のタグ付けを忘れない」でした——3 行のうち唯一、固定された定義ではなく発注時の規律（とフックの保険）で支えられていたティアです。それを露呈させたのは移植でした。このポリシーを 2 つ目の CLI（Codex Desktop、ネイティブの custom-agent TOML 3 本）に移したところ、移植版は汎用フォールバックまで含む全ロールを設定で固定しており、並べて見るとこの非対称は隠しようがなかった。修正が逆輸入された形です：[`judge`](agents/judge.md) が frontmatter で opus を固定し、軽い判断は同じエージェントの明示 sonnet ダウングレードになり、フックの許可リストに名前が 1 つ増えた。手法の第 2 条「固定は裁量に勝る」が、これで 3 行すべてに当てはまります。
 
 ## 既知の穴
 

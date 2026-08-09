@@ -50,11 +50,11 @@ So: frameworks route but don't enforce, hook routers enforce but bring a classif
 |---|---|---|---|
 | Read-only recon (scan / search / read / summarize) | [`scout`](agents/scout.md) | haiku | low |
 | Mechanical execution (plan decided, just hands) | [`worker`](agents/worker.md) | sonnet | medium |
-| Judgment (review / design / research) | general-purpose | explicit opus | session |
+| Judgment (review / design / research) | [`judge`](agents/judge.md) | opus (pinned) | session |
 
 Models are pinned in agent frontmatter — the settings block at the top of each agent file — so the table holds even when nobody is thinking about it. The second dimension matters more than it looks: `effort: low` alone cut scout's output tokens 41% with no perceived quality loss on recon work.
 
-**Layer 2 — judgment-tier split, done by the orchestrator itself.** Light judgment (single-file review, copy review, two-way choices) gets tagged sonnet; heavy judgment (architecture, cross-file review, open-ended design) gets opus; unsure defaults to opus. This is the "dynamic routing" part of the system, and it needs no infrastructure at all — see below.
+**Layer 2 — judgment-tier split, done by the orchestrator itself.** Light judgment (single-file review, copy review, two-way choices) gets `judge` with an explicit sonnet downgrade; heavy judgment (architecture, cross-file review, open-ended design) rides `judge`'s default opus; unsure stays untagged, which now safely means opus. This is the "dynamic routing" part of the system, and it needs no infrastructure at all — see below.
 
 **Layer 3 — the mechanical gate** ([hooks/agent-model-guard.sh](hooks/agent-model-guard.sh)) — a PreToolUse hook, i.e. a script Claude Code runs before letting a tool call through. If Claude tries to hire a helper without naming a model, the hook **denies** the request and hands the routing table back in the rejection message; Claude re-sends it with a model attached. Rules prevent habit; the gate prevents mistakes.
 
@@ -62,11 +62,11 @@ Escalation rule that keeps the cheap tiers honest: if a cheap tier botches a tas
 
 ## Install
 
-Three files, one settings entry, one policy block. From a clone of this repo (the hook needs `jq` — `command -v jq` to check):
+Four files, one settings entry, one policy block. From a clone of this repo (the hook needs `jq` — `command -v jq` to check):
 
 ```bash
 mkdir -p ~/.claude/agents ~/.claude/hooks
-cp agents/scout.md agents/worker.md ~/.claude/agents/
+cp agents/scout.md agents/worker.md agents/judge.md ~/.claude/agents/
 cp hooks/agent-model-guard.sh ~/.claude/hooks/ && chmod +x ~/.claude/hooks/agent-model-guard.sh
 ```
 
@@ -93,7 +93,7 @@ Notes that save you a bug report:
 
 - **Restart Claude Code after installing** — agent definitions load at session start.
 - **Leave `CLAUDE_CODE_SUBAGENT_MODEL` unset** — it globally overrides per-agent frontmatter, which would silently defeat the pins.
-- **Agent names resolve project-first.** If a project defines its own `scout`/`worker`, that definition wins over `~/.claude/agents/`. Keep these names unique in your setup, and if you add your own pinned agents, extend the hook's allowlist (`scout|worker|fork`) to match.
+- **Agent names resolve project-first.** If a project defines its own `scout`/`worker`/`judge`, that definition wins over `~/.claude/agents/`. Keep these names unique in your setup, and if you add your own pinned agents, extend the hook's allowlist (`scout|worker|judge|fork`) to match.
 - **The hook validates the requested spawn, not the resolved model.** It closes the "forgot to tag" failure mode — which in my measurements was the entire leak — not every conceivable misconfiguration.
 
 Smoke test: in any session, ask Claude to spawn a general-purpose subagent *without* specifying a model. Expected: the spawn is denied, the deny reason echoes the routing table, and Claude re-issues it with a model attached. Tested on Claude Code 2.1.210, Aug 2026. If it never denies: check `jq` is installed, the script path in settings.json resolves, and the matcher is exactly `Agent` — hook payload schemas can drift between versions, so diff against the changelog if you're far from 2.1.210. If it denies but Claude doesn't re-issue, that's model compliance, not the hook. Failure mode is open by design: a crashing hook surfaces an error and the spawn proceeds — worst case is stock behavior, not a bricked session.
@@ -106,13 +106,13 @@ Nothing about how you talk to Claude. You ask for what you want; the policy bloc
 
 - *"Where is the retry logic defined?"* → Claude sends `scout` — Haiku, read-only — and gets file:line back.
 - *"Apply that rename across the repo"* → `worker` — Sonnet, hands only, no design decisions.
-- *"Review this diff properly"* → a general-purpose agent, explicitly tagged opus.
+- *"Review this diff properly"* → `judge` — opus pinned in frontmatter; light reviews get an explicit sonnet downgrade.
 
 You can also route by hand whenever you feel like it: *"send scout to map the auth module first"*, *"have worker apply the spec"* — the agent names become shared vocabulary between you and Claude.
 
 When the gate fires, it looks like this in the transcript — a bounced request, not an error:
 
-> agent-model-guard: this Agent call has no model and would silently inherit the main-thread model. Re-issue it with an explicit model per the routing table: judgment → opus, light judgment → sonnet, read-only recon → haiku. …
+> agent-model-guard: this Agent call has no model and would silently inherit the main-thread model. Re-issue it per the routing table: judgment → judge (opus pinned; tag sonnet for light judgment), mechanical execution → worker, read-only recon → scout. …
 
 Claude reads that, re-issues with a model, and the work continues. Mostly you'll notice it *never* firing — that's the point.
 
@@ -131,6 +131,10 @@ Once a month (or after changing your setup), re-run [audit §2](audit/audit-comm
 - **No rewrite-style enforcement.** Deny-and-reissue keeps the orchestrator in the loop and composes safely with other hooks; rewriting spawn params via `updatedInput` has undocumented merge order when multiple hooks fire (per the router-hook project's own README). Convergent evidence: junoseong's deny-based hook measured **25.3k → 11.4k tokens** on a deny-retry test task.
 - **No finer tiers.** Post-hardening, the remaining headroom is coin-picking. Every added tier adds classification burden and misroute surface for cents of upside.
 - **No cross-provider proxy.** Tools like [claude-code-router](https://github.com/musistudio/claude-code-router) solve a different problem (swapping backends). This system stays inside one vendor and one subscription, which is exactly why the numbers above are clean.
+
+## Update (2026-08-09): the last discipline-held tier got pinned
+
+The judgment row above originally read "general-purpose + remember to tag opus" — the only tier held up by dispatch discipline (plus the hook) instead of a pinned definition. What exposed it: porting this policy to a second CLI (Codex Desktop, as three native custom-agent TOMLs). The port pinned every role in config — including the generic fallback — and the asymmetry became hard to unsee. So the fix flowed back: [`judge`](agents/judge.md) pins opus in frontmatter, light judgment becomes an explicit sonnet downgrade on the same agent, and the hook allowlist grew one name. Rule 2 of the method — pin beats discretion — now applies to all three rows.
 
 ## Known gaps
 

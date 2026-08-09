@@ -50,11 +50,11 @@ Claude Code 的子 agent 在 agent 定义没钉模型、派发时也没显式传
 |---|---|---|---|
 | 只读侦察（扫/搜/读/汇总） | [`scout`](agents/scout.md) | haiku | low |
 | 机械执行（方案已定，只差动手） | [`worker`](agents/worker.md) | sonnet | medium |
-| 判断（review / 设计 / 调研） | general-purpose | 显式 opus | 会话 |
+| 判断（review / 设计 / 调研） | [`judge`](agents/judge.md) | opus（钉死） | 会话 |
 
 模型钉在 agent frontmatter（agent 文件顶部的设置块）里，没人想着这张表时它也在生效。第二个维度比看上去重要：仅 `effort: low` 一项就把 scout 的输出 token 砍了 41%，侦察类活感知不到质量损失。
 
-**第二层——判断档内分流，由编排者自己做。** 轻判断（单文件 review、文案审、二选一）标 sonnet；重判断（架构、跨文件 review、开放式设计）标 opus；拿不准默认 opus。这就是系统里的「动态路由」部分，且完全不需要基建——见下文。
+**第二层——判断档内分流，由编排者自己做。** 轻判断（单文件 review、文案审、二选一）派 `judge` 时显式降档 sonnet；重判断（架构、跨文件 review、开放式设计）直接吃 `judge` 的默认 opus；拿不准就不标——现在不标也稳稳落在 opus。这就是系统里的「动态路由」部分，且完全不需要基建——见下文。
 
 **第三层——机械闸**（[hooks/agent-model-guard.sh](hooks/agent-model-guard.sh)）——一个 PreToolUse hook，即 Claude Code 在放行工具调用之前先跑的一段脚本。Claude 雇帮手时没说用哪个模型，hook 就把请求**打回**，拒绝信息里附上路由表；Claude 带上模型重发。规则防习惯，闸防失误。
 
@@ -62,11 +62,11 @@ Claude Code 的子 agent 在 agent 定义没钉模型、派发时也没显式传
 
 ## 安装
 
-三个文件、一条 settings 配置、一段策略文本。在本 repo 的 clone 里执行（hook 依赖 `jq`——先 `command -v jq` 确认）：
+四个文件、一条 settings 配置、一段策略文本。在本 repo 的 clone 里执行（hook 依赖 `jq`——先 `command -v jq` 确认）：
 
 ```bash
 mkdir -p ~/.claude/agents ~/.claude/hooks
-cp agents/scout.md agents/worker.md ~/.claude/agents/
+cp agents/scout.md agents/worker.md agents/judge.md ~/.claude/agents/
 cp hooks/agent-model-guard.sh ~/.claude/hooks/ && chmod +x ~/.claude/hooks/agent-model-guard.sh
 ```
 
@@ -93,7 +93,7 @@ cp hooks/agent-model-guard.sh ~/.claude/hooks/ && chmod +x ~/.claude/hooks/agent
 
 - **装完重启 Claude Code**——agent 定义在会话启动时加载。
 - **`CLAUDE_CODE_SUBAGENT_MODEL` 保持不设**——它会全局覆盖 frontmatter，静默废掉所有钉死。
-- **Agent 名按项目优先解析。** 项目里定义了自己的 `scout`/`worker` 会盖过 `~/.claude/agents/`。保持这俩名字在你环境里唯一；自己加钉死 agent 的话，同步扩 hook 的放行名单（`scout|worker|fork`）。
+- **Agent 名按项目优先解析。** 项目里定义了自己的 `scout`/`worker`/`judge` 会盖过 `~/.claude/agents/`。保持这几个名字在你环境里唯一；自己加钉死 agent 的话，同步扩 hook 的放行名单（`scout|worker|judge|fork`）。
 - **Hook 校验的是派发请求，不是最终解析出的模型。** 它焊死的是「忘了标」这个失误面——在我的测量里这就是泄漏的全部——不是所有想得到的配置错误。
 
 冒烟测试：任意会话里，让 Claude 派一个**不带** model 的 general-purpose 子 agent。预期：派发被 deny，拒绝理由里是路由表，Claude 带上模型重新派发。测试于 Claude Code 2.1.210，2026 年 8 月。一直不 deny：查 `jq` 装没装、settings.json 里的脚本路径能不能解析、matcher 是否精确为 `Agent`——hook 的 payload schema 会随版本漂移，离 2.1.210 太远就对照 changelog。deny 了但 Claude 不重派，那是模型的服从性问题，不是 hook 的。失败模式有意设计为开放：hook 自己崩了会报错、派发照常进行——最坏情况就是回到默认行为，不会把会话搞死。
@@ -106,13 +106,13 @@ cp hooks/agent-model-guard.sh ~/.claude/hooks/ && chmod +x ~/.claude/hooks/agent
 
 - 「retry 逻辑定义在哪？」→ Claude 派 `scout`——Haiku、只读——带回 file:line。
 - 「把这个重命名全仓套一遍」→ `worker`——Sonnet、只动手、不做设计决定。
-- 「好好 review 一下这个 diff」→ general-purpose agent，显式标 opus。
+- 「好好 review 一下这个 diff」→ `judge`——frontmatter 已钉 opus；轻量 review 显式降档 sonnet。
 
 想手动点名也随时可以：「先让 scout 把 auth 模块摸一遍」「让 worker 按 spec 改」——agent 名会变成你和 Claude 之间的共用词汇。
 
 闸门触发时，转录里长这样——是打回重来，不是报错：
 
-> agent-model-guard: this Agent call has no model and would silently inherit the main-thread model. Re-issue it with an explicit model per the routing table: judgment → opus, light judgment → sonnet, read-only recon → haiku. …
+> agent-model-guard: this Agent call has no model and would silently inherit the main-thread model. Re-issue it per the routing table: judgment → judge (opus pinned; tag sonnet for light judgment), mechanical execution → worker, read-only recon → scout. …
 
 Claude 读完，带上模型重新派发，活照常干。大多数时候你会发现它*从不*触发——这正是目的。
 
@@ -131,6 +131,10 @@ Claude 读完，带上模型重新派发，活照常干。大多数时候你会�
 - **不做改写式强制。** Deny-重派让编排者留在环路里，与其他 hook 组合安全；用 `updatedInput` 改写 spawn 参数在多 hook 同时触发时合并顺序无文档（router-hook 项目自己的 README 承认这一点）。收敛证据：junoseong 的 deny 式 hook 在测试任务上量到 **25.3k → 11.4k token**。
 - **不加更细档位。** 加固之后，剩余空间就是捡硬币。每加一档都在为几美分的收益增加分类负担和误路由面。
 - **不做跨厂商代理。** [claude-code-router](https://github.com/musistudio/claude-code-router) 这类工具解决的是另一个问题（换后端）。本系统留在单一厂商单一订阅内——这正是上面数字干净的原因。
+
+## 更新（2026-08-09）：最后一个靠纪律撑着的档也钉死了
+
+上面路由表的判断行，原本写的是「general-purpose + 记得标 opus」——三行里唯一靠派单纪律（外加 hook 兜底）而不是钉死定义撑着的一档。暴露它的是一次移植：把这套策略搬到第二个 CLI（Codex Desktop，三个原生 custom-agent TOML）。移植版把每个角色——连通用 fallback 都算上——全部钉进了配置，两边一对比，这处不对称就藏不住了。于是修法反哺回来：[`judge`](agents/judge.md) 在 frontmatter 里钉死 opus，轻判断变成同一个 agent 显式降档 sonnet，hook 放行名单多了一个名字。方法论第 2 条「钉死胜过自觉」，现在对三行全部成立。
 
 ## 已知开口
 

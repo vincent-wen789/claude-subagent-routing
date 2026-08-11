@@ -136,12 +136,20 @@ Once a month (or after changing your setup), re-run [audit §2](audit/audit-comm
 
 The judgment row above originally read "general-purpose + remember to tag opus" — the only tier held up by dispatch discipline (plus the hook) instead of a pinned definition. What exposed it: porting this policy to a second CLI (Codex Desktop, as three native custom-agent TOMLs). The port pinned every role in config — including the generic fallback — and the asymmetry became hard to unsee. So the fix flowed back: [`judge`](agents/judge.md) pins opus in frontmatter, light judgment becomes an explicit sonnet downgrade on the same agent, and the hook allowlist grew one name. Rule 2 of the method — pin beats discretion — now applies to all three rows.
 
+## Update (2026-08-11): eight more days, 6.3× the volume
+
+The obvious objection to a 26-day n=1 is that the window might just have been quiet. It wasn't quiet afterwards: over the next 8 days (Aug 4–11) subagent dispatch went from **87 to 545 assistant turns per day — 6.3× the volume** — and the routing held. Fable leaked **zero** times. The volume-held counterfactual for that window: $52.24 actual against $108.75 at the pre-routing mix (−52%), and $54.20 at the hardened mix — **3.6% apart**. That last number is the real finding: the system is done, what's left is coins.
+
+One figure in that window is a trap, and it's worth showing rather than burying. Headline unit cost fell again — $1.31 → **$0.79 per M tokens** — and almost none of that is routing. Cache reads went from 84.2% to 91.5% of tokens, and cache reads bill at 0.1×, so the denominator inflated. Strip the cache and the routing-only figure moved the *other* way: $12.01 → $14.07 per M in+out tokens, because output's share of in+out went from 74.9% to 92.8% and output bills 5×. Same routing, different conversation shape. **Read both, always** — [§3](audit/audit-commands.md) is what you spent, [§2](audit/audit-commands.md) is what routing did.
+
+The last thing this window changed is the framing. Subagents were 21% of in+out token flow but only **10% of spend** ($413 of $4,200 across those 8 days) — the gap between those two numbers *is* the routing working. The other 90% sits on the main thread, where a frontier model is a deliberate choice rather than an unaudited default. That's the honest ceiling: this repo makes delegated work cheap, and has nothing to say about what you pick for yourself.
+
 ## Known gaps
 
 - **In-workflow `agent()` calls bypass the Agent hook** (PreToolUse never fires for them). Soft-constrained by the policy block only. Measured leakage: 7 calls ≈ $6 over 19 days — not worth a gate.
 - **`fork` agents are exempt by design** — inheritance is their semantic; the model param is a no-op.
-- **Open question:** the opus tier still carries ~52% of subagent tokens. Task mix, or under-use of the light-judgment split? Next re-measure will say.
-- **September re-test planned:** Sonnet's limited-time pricing ($2/$10) ends Sep 1 → $3/$15. Unit cost will mechanically rise ~20%. That's list price, not routing regression — flagging it now so the future number isn't misread.
+- **Re-measured 2026-08-11** (was: an open question about the opus tier's share): opus is **31.7% of subagent in+out tokens and 47.9% of subagent spend**, down from 35.1% / 54.2% in the hardened window. The light-judgment split is working, just slowly. For the record, the "~52%" this bullet used to quote was almost certainly a spend figure recorded as a token figure — hence both numbers, separately, from here on.
+- **September re-test:** Sonnet's introductory pricing ($2/$10) ends **Aug 31, 2026** → $3/$15 ([confirmed on the pricing page](https://platform.claude.com/docs/en/about-claude/pricing); no extension). Recomputed against the Aug 4–11 window that's **+26% on subagent spend**, not the ~20% first estimated, putting unit cost near $0.99. List price, not routing regression.
 - Model aliases (`opus`, `sonnet`, `haiku`) resolve forward: mid-run, the `opus` alias picked up a newer Opus at the same price — a free upgrade here, but pin exact model IDs if you need determinism.
 
 ## License

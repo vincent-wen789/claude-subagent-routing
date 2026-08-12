@@ -146,6 +146,7 @@ The last thing this window changed is the framing. Subagents were 21% of in+out 
 
 ## Known gaps
 
+- **Routing savings ≠ delegation savings.** Every number above measures *which model your subagents run on* — not whether spawning them beat doing the work inline. Those two can point opposite ways: a paired A/B on another CLI found a frontier root plus one cheap explorer child came out **8% more expensive** than the root working alone, because the child was cheap but the root never stopped redoing the work. This repo doesn't claim delegation pays for itself; it claims that once you delegate, you shouldn't do it at frontier rates. [Audit §6](audit/audit-commands.md) catches that failure mode on transcripts you already have, no A/B needed (mine: 85:1 compression, 2.9% re-exploration).
 - **In-workflow `agent()` calls bypass the Agent hook** (PreToolUse never fires for them). Soft-constrained by the policy block only. Measured leakage: 7 calls ≈ $6 over 19 days — not worth a gate.
 - **`fork` agents are exempt by design** — inheritance is their semantic; the model param is a no-op.
 - **Re-measured 2026-08-11** (was: an open question about the opus tier's share): opus is **31.7% of subagent in+out tokens and 47.9% of subagent spend**, down from 35.1% / 54.2% in the hardened window. The light-judgment split is working, just slowly. For the record, the "~52%" this bullet used to quote was almost certainly a spend figure recorded as a token figure — hence both numbers, separately, from here on.

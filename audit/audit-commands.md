@@ -100,3 +100,52 @@ awk -F'\t' '{s[$1]+=$2; t+=$2} END {printf "subagent: %d (%.1f%%)  main thread: 
 ```
 
 Mine ran ~15% subagent in the hardened window. The bigger that number — and the more expensive your main thread — the more this repo is worth your ten minutes.
+
+## 6. Is delegation itself paying off?
+
+Everything above answers *which model your subagents run on*. It does not answer *whether spawning them beat doing the work inline* — a different question, and one that can go the other way.
+
+The failure mode to watch for: you attach a cheap child to an expensive parent, the child does real work, and the parent **still** pays a similar synthesis bill because it re-reads the material and redoes the reasoning. Tokens get duplicated instead of moved, and the total goes up even though the child was cheap. A paired A/B on another CLI measured exactly this — a frontier root plus one cheap explorer child came out **8% more expensive** than the root working alone, with the child accounting for only 3.4% of spend and the root's own token count *rising*.
+
+Settling that properly needs a paired A/B. But the specific failure mode is directly observable in transcripts you already have, no experiment required.
+
+**6a. Compression ratio** — how much work the child absorbed versus how much it handed back:
+
+```bash
+find ~/.claude/projects -name '*.jsonl' -print0 | xargs -0 cat 2>/dev/null | \
+jq -r 'select(.timestamp >= "2026-08-04") |
+  if (.isSidechain == true and .message.usage != null) then
+    "SUB\t\(.message.usage.input_tokens + .message.usage.output_tokens)"
+  elif (.message.content != null) then
+    (.message.content[]? | select(.type=="tool_use" and (.name=="Agent" or .name=="Task")) | "ID\t\(.id)"),
+    (.message.content[]? | select(.type=="tool_result") | "RET\t\(.tool_use_id)\t\([.content[]?.text // ""] | join("") | length)")
+  else empty end' 2>/dev/null | \
+awk -F'\t' '$1=="SUB"{s+=$2} $1=="ID"{id[$2]=1} $1=="RET"{ret[$2]=$3}
+  END{for (k in ret) if (k in id) {n++; r+=ret[k]}
+      printf "subagent work:      %12d in+out tok\n", s
+      printf "returned to parent: %12d tok  (%d dispatches, avg %d)\n", r/4, n, r/4/n
+      printf "compression ratio:  %12.0f : 1\n", s/(r/4)}'
+```
+
+Characters are converted to tokens at a flat ÷4 — rough, but the ratio is what matters. A high ratio means the child absorbed context the parent never had to hold. Mine: **85:1** (3.8M in+out tokens of child work, 45k tokens handed back across 118 dispatches).
+
+**6b. Re-exploration rate** — the direct test for whether the parent redoes the child's work:
+
+```bash
+find ~/.claude/projects -name '*.jsonl' -print0 | xargs -0 cat 2>/dev/null | \
+jq -r 'select(.timestamp >= "2026-08-04") | select((.isSidechain // false) == false) | select(.message.content != null) |
+  (.message.content[]? | select(.type=="tool_use")    | "USE\t\(.name)\t\(.id)"),
+  (.message.content[]? | select(.type=="tool_result") | "RET\t\(.tool_use_id)\t-")' 2>/dev/null | \
+awk -F'\t' '{l[NR]=$0} $1=="USE" && ($2=="Agent" || $2=="Task"){a[$3]=1}
+  END{for (i=1; i<=NR; i++) {split(l[i],f,"\t")
+        if (f[1]=="RET" && (f[2] in a)) {flag=1; continue}
+        if (flag && f[1]=="USE") {nx[f[2]]++; tot++; flag=0}}
+      print "First parent action after a subagent returns:"
+      for (t in nx) printf "  %-18s %4d  %5.1f%%\n", t, nx[t], 100*nx[t]/tot
+      redo = nx["Read"] + nx["Grep"] + nx["Glob"]
+      printf "re-exploration (Read/Grep/Glob): %d of %d = %.1f%%\n", redo, tot, 100*redo/tot}'
+```
+
+If the parent's first move after a child returns is usually `Read`/`Grep`/`Glob`, it is going back to the source material — the duplication this section is about. If it is mostly writing, editing, or dispatching the next child, the parent is consuming conclusions. Mine: **2.9%** re-exploration; 63% of the time the next action was dispatching another child in the same parallel batch.
+
+Neither number proves delegation is profitable — only a paired A/B does that. What they do is catch the specific way it goes wrong, cheaply, on data you already have.

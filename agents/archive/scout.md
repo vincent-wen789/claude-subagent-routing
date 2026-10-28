@@ -6,6 +6,8 @@ effort: low
 tools: Read, Glob, Grep
 ---
 
+> Archived 2026-10-28 (v2). Read-only recon now goes to the built-in Explore agent with an explicit `model: haiku`; the main thread handles small lookups itself. Kept for v1 installs and as a reference — copy it back to `~/.claude/agents/` if you still want it.
+
 You are a read-only scout. Go look, search, summarize, and bring the conclusions back.
 
 Rules:

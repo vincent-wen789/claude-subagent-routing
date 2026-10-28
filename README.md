@@ -2,11 +2,45 @@
 
 **English** | [中文](README.zh.md) | [日本語](README.ja.md)
 
+> **v2 since 2026-10-28:** the main thread does the work by default; subagents are spawned by context, in three cases only. [What changed and why ↓](#v2) Sections labeled **v1** (Jul 9 – Oct 27, 2026) are kept as data and method.
+
 Static model routing for Claude Code subagents: one policy table, two pinned agents, one deny hook (~15 lines of logic). No classifier, no proxy, no framework — and 26 days of single-user production receipts (n=1).
 
 New to this corner of Claude Code? The one-breath version: while working, Claude Code quietly hires helper AIs — *subagents* — for side jobs like searching your codebase or applying bulk edits. By default, every helper bills at whatever model your main session runs. If that's an expensive model, you're paying senior rates for intern work, and nothing on screen tells you. This repo pins the intern work to intern-priced models and puts a gate in front of the mistake. How you use Claude doesn't change; the billing does.
 
-**The receipts first** (Jul 3 – Aug 3: a 6-day pre-routing baseline, then 26 days on the system — 497M subagent tokens, one user, mixed real workload; fine print lives with the [audit commands](audit/audit-commands.md)):
+<a id="v2"></a>
+## v2 (2026-10-28): main thread by default, delegate by context
+
+**The rule now:** the main thread does the work itself. A subagent is spawned automatically in only three cases, with its model tier pinned at spawn time:
+
+| Case | What it looks like | Agent · tier |
+|---|---|---|
+| 1. Independent perspective | Cold reads, persona audits, blind evaluation, review | `judge` — cold reads and single-file / copy reviews tagged sonnet; multi-source synthesis and architecture / cross-file review stay on its pinned opus |
+| 2. Parallel fan-out | ≥3 branches that don't depend on each other, each returning a compact result (split research, chunked labeling) | One tier for the whole batch, decided before dispatch |
+| 3. Large-batch mechanical work | Spec fits in a sentence or two, output dwarfs the spec, no main-thread context needed (batch renames, reformatting, chunked labeling, moving content) | `worker` — explicit haiku for pure grunt work |
+
+**Not delegated:** implementation work tightly coupled to main-thread context — code or prototype changes right after the plan was discussed. **Unsure?** Small job → do it inline. Large job → ask the user once, with a lean. Read-only recon that needs a shell or a broad search goes to the built-in Explore agent tagged haiku; `scout` is archived.
+
+"Small inline, large ask" replaced the first proposal, "always ask when unsure": if the main thread wrongly keeps a job, the worst case is one stretch of output at 2× the price, and interrupting the user costs more. The rule is written as a checklist on purpose — v1's light/heavy judgment split drifted when it was left to discretion (one research batch got dispatched across two tiers).
+
+**Why it changed**
+
+- **Trigger:** Anthropic's [Building agents: when to fold subagents into your main agent loop](https://claude.com/resources/articles/building-agents-when-to-fold-subagents-into-your-main-agent-loop) (Diane Sarkis, 2026-10-22). Its argument: splitting agents by problem type degrades like a game of telephone; split by context instead. Subagents earn their place in three situations — verification / an independent view, parallel fan-out, and keeping the main context from being flooded. The article doesn't cover big-vs-small model routing; the price argument below is mine.
+- **The price gap shrank.** v1 was designed around a Fable main thread ($10/$50, 5× Sonnet). The main thread is now Opus 5.5 ($4/$20, 2× Sonnet). The room to save by outsourcing mechanical work shrank by more than half; the handoff cost — writing the spec, the subagent rebuilding context from zero, the main thread reviewing the result — didn't shrink at all.
+- **v1's ledger was one-sided.** The 42-day saving (48%, $1,166 less) counts subagent unit price only. Handoff, review, and rework were never counted, and quality never had an objective gauge (see Known gaps below).
+- **The policy block was turning into a Frankenprompt** — tier table, exceptions, and dated lessons stacked into one section.
+
+**What the v1 dispatch data said** (691 spawns over the last 21 active days, bucketed by keyword, buckets overlap): cold read / persona / visual review ~287, blind eval / review ~108, multi-source research ~77 — already split by context, so they stay. `worker` ~102: about half was chunked batch work (fine); the other half was implementation the main thread handed off right after discussing the plan (`Implement twostep v2`, `Rebuild flow mock`) — exactly the type-based split the article warns about. `scout`: 17.
+
+**Unchanged from v1:** the hook still bounces untagged spawns, `judge` still pins opus in frontmatter, and a cheap tier that botches a task once still escalates one tier — never a same-tier retry.
+
+**Changed in this repo:** the [policy block](policy/claude-md-block.md) is rewritten (v1 kept at [policy/claude-md-block-v1.md](policy/claude-md-block-v1.md)); [`worker`](agents/worker.md) is narrowed to large-batch mechanical work; `scout` moved to [agents/archive/](agents/archive/scout.md); the [hook](hooks/agent-model-guard.sh)'s deny message now asks "should this be delegated at all?" before routing.
+
+**What v2 adds to the method:** count the whole bill — main thread plus subagents plus rework — not the subagent unit price.
+
+**Re-test (around 2026-11-11):** same jq queries, this time with the **main thread and subagents on one bill**, plus a rework count (escalated re-dispatches + main-thread fixes to subagent output), compared against v1's Aug 12–19 window. If the total got more expensive and rework didn't drop, the `worker` rule rolls back.
+
+**The v1 receipts** (Jul 3 – Aug 3: a 6-day pre-routing baseline, then 26 days on the system — 497M subagent tokens, one user, mixed real workload; fine print lives with the [audit commands](audit/audit-commands.md)):
 
 | Metric | Before (Jul 3–8) | Pinned (Jul 9–15) | Hardened (Jul 16–Aug 3) |
 |---|---|---|---|
@@ -42,13 +76,15 @@ This niche has real projects in it. What I couldn't find anywhere: production nu
 
 So: frameworks route but don't enforce, hook routers enforce but bring a classifier, auditors measure but don't route. This repo is the missing combination — **policy + enforcement + measurement, no classifier** — plus the receipts.
 
-## The system: three layers × two dimensions
+## The v1 system: three layers × two dimensions
 
-**Layer 1 — the routing table** ([policy/claude-md-block.md](policy/claude-md-block.md)), pasted into `CLAUDE.md`:
+*v1, Jul 9 – Oct 27, 2026. The live policy is [v2](#v2); this is the role-based routing it replaced, and what the receipts above measure.*
+
+**Layer 1 — the routing table** ([policy/claude-md-block-v1.md](policy/claude-md-block-v1.md)), pasted into `CLAUDE.md`:
 
 | Work type | Agent | Model | Effort |
 |---|---|---|---|
-| Read-only recon (scan / search / read / summarize) | [`scout`](agents/scout.md) | haiku | low |
+| Read-only recon (scan / search / read / summarize) | [`scout`](agents/archive/scout.md) (archived in v2) | haiku | low |
 | Mechanical execution (plan decided, just hands) | [`worker`](agents/worker.md) | sonnet | medium |
 | Judgment (review / design / research) | [`judge`](agents/judge.md) | opus (pinned) | session |
 
@@ -60,13 +96,13 @@ Models are pinned in agent frontmatter — the settings block at the top of each
 
 Escalation rule that keeps the cheap tiers honest: if a cheap tier botches a task once, re-dispatch one tier up. Never retry at the same tier.
 
-## Install
+## Install (v2)
 
-Four files, one settings entry, one policy block. From a clone of this repo (the hook needs `jq` — `command -v jq` to check):
+Three files, one settings entry, one policy block. From a clone of this repo (the hook needs `jq` — `command -v jq` to check):
 
 ```bash
 mkdir -p ~/.claude/agents ~/.claude/hooks
-cp agents/scout.md agents/worker.md agents/judge.md ~/.claude/agents/
+cp agents/worker.md agents/judge.md ~/.claude/agents/
 cp hooks/agent-model-guard.sh ~/.claude/hooks/ && chmod +x ~/.claude/hooks/agent-model-guard.sh
 ```
 
@@ -93,32 +129,35 @@ Notes that save you a bug report:
 
 - **Restart Claude Code after installing** — agent definitions load at session start.
 - **Leave `CLAUDE_CODE_SUBAGENT_MODEL` unset** — it globally overrides per-agent frontmatter, which would silently defeat the pins.
-- **Agent names resolve project-first.** If a project defines its own `scout`/`worker`/`judge`, that definition wins over `~/.claude/agents/`. Keep these names unique in your setup, and if you add your own pinned agents, extend the hook's allowlist (`scout|worker|judge|fork`) to match.
+- **Upgrading from v1:** re-copy `worker.md`, the hook, and the policy block. `scout` can stay installed (the hook still allowlists it) or be deleted — v2 sends recon to Explore with an explicit haiku tag.
+- **Agent names resolve project-first.** If a project defines its own `worker`/`judge`, that definition wins over `~/.claude/agents/`. Keep these names unique in your setup, and if you add your own pinned agents, extend the hook's allowlist (`scout|worker|judge|fork`) to match.
 - **The hook validates the requested spawn, not the resolved model.** It closes the "forgot to tag" failure mode — which in my measurements was the entire leak — not every conceivable misconfiguration.
 
 Smoke test: in any session, ask Claude to spawn a general-purpose subagent *without* specifying a model. Expected: the spawn is denied, the deny reason echoes the routing table, and Claude re-issues it with a model attached. Tested on Claude Code 2.1.210, Aug 2026. If it never denies: check `jq` is installed, the script path in settings.json resolves, and the matcher is exactly `Agent` — hook payload schemas can drift between versions, so diff against the changelog if you're far from 2.1.210. If it denies but Claude doesn't re-issue, that's model compliance, not the hook. Failure mode is open by design: a crashing hook surfaces an error and the spawn proceeds — worst case is stock behavior, not a bricked session.
 
 That's the whole install. No daemon, no proxy, no npm.
 
-## Day two: what actually changes
+## Day two: what actually changes (v2)
 
-Nothing about how you talk to Claude. You ask for what you want; the policy block steers the delegation:
+Nothing about how you talk to Claude. You ask for what you want; the policy block decides whether anything gets delegated at all:
 
-- *"Where is the retry logic defined?"* → Claude sends `scout` — Haiku, read-only — and gets file:line back.
-- *"Apply that rename across the repo"* → `worker` — Sonnet, hands only, no design decisions.
-- *"Review this diff properly"* → `judge` — opus pinned in frontmatter; light reviews get an explicit sonnet downgrade.
+- *"Where is the retry logic defined?"* → the main thread just searches. If answering means sweeping a large codebase, it sends Explore tagged haiku and gets file:line back.
+- *"Implement the plan we just agreed on"* → main thread. The context lives there; handing it off means re-explaining it.
+- *"Apply that rename across the repo"* → `worker` — Sonnet (haiku for pure grunt work), one-sentence spec, no design decisions.
+- *"Review this diff properly"* → `judge` — opus pinned in frontmatter; cold reads and light reviews get an explicit sonnet tag.
+- *"Research these four competitors"* → four `judge` spawns in parallel, one tier for the whole batch.
 
-You can also route by hand whenever you feel like it: *"send scout to map the auth module first"*, *"have worker apply the spec"* — the agent names become shared vocabulary between you and Claude.
+You can still route by hand whenever you feel like it: *"get a cold read from judge"*, *"have worker apply the spec"* — the agent names become shared vocabulary between you and Claude.
 
 When the gate fires, it looks like this in the transcript — a bounced request, not an error:
 
-> agent-model-guard: this Agent call has no model and would silently inherit the main-thread model. Re-issue it per the routing table: judgment → judge (opus pinned; tag sonnet for light judgment), mechanical execution → worker, read-only recon → scout. …
+> agent-model-guard: this Agent call has no model and would silently inherit the main-thread model. First check whether it should be delegated at all (default: the main thread does it). If it should, re-issue per the routing table: independent perspective → judge (opus pinned; tag sonnet for cold reads), large-batch mechanical work → worker, recon → Explore with model haiku. …
 
-Claude reads that, re-issues with a model, and the work continues. Mostly you'll notice it *never* firing — that's the point.
+Claude reads that, either does the job inline or re-issues with a model, and the work continues. Mostly you'll notice it *never* firing — that's the point.
 
-Once a month (or after changing your setup), re-run [audit §2](audit/audit-commands.md) and check two numbers: the frontier model's share of subagent tokens (should be ~0 unless you asked for it by name) and whether the model mix is drifting where you expect.
+Once a month (or after changing your setup), re-run [audit §2](audit/audit-commands.md) and check two numbers: the frontier model's share of subagent tokens (should be ~0 unless you asked for it by name) and whether the model mix is drifting where you expect. Since v2, also run [§5](audit/audit-commands.md) — subagent share of everything: the question is now the whole bill, not the subagent slice.
 
-## The method (what I'd do again)
+## The method (v1 — what I'd do again)
 
 1. **Audit the defaults.** Every "inherit / default" behavior hides an assumption that fails silently when the environment changes. The first cost lever is not switching to a cheaper model — it's finding the expensive default that's already running.
 2. **Pin beats discretion.** The savings came from deleting decisions, not making better ones. A rule that requires remembering is not a rule.
@@ -132,11 +171,11 @@ Once a month (or after changing your setup), re-run [audit §2](audit/audit-comm
 - **No finer tiers.** Post-hardening, the remaining headroom is coin-picking. Every added tier adds classification burden and misroute surface for cents of upside.
 - **No cross-provider proxy.** Tools like [claude-code-router](https://github.com/musistudio/claude-code-router) solve a different problem (swapping backends). This system stays inside one vendor and one subscription, which is exactly why the numbers above are clean.
 
-## Update (2026-08-09): the last discipline-held tier got pinned
+## Update (2026-08-09, v1): the last discipline-held tier got pinned
 
 The judgment row above originally read "general-purpose + remember to tag opus" — the only tier held up by dispatch discipline (plus the hook) instead of a pinned definition. What exposed it: porting this policy to a second CLI (Codex Desktop, as three native custom-agent TOMLs). The port pinned every role in config — including the generic fallback — and the asymmetry became hard to unsee. So the fix flowed back: [`judge`](agents/judge.md) pins opus in frontmatter, light judgment becomes an explicit sonnet downgrade on the same agent, and the hook allowlist grew one name. Rule 2 of the method — pin beats discretion — now applies to all three rows.
 
-## Update (2026-08-11): eight more days, 6.3× the volume
+## Update (2026-08-11, v1): eight more days, 6.3× the volume
 
 The obvious objection to a 26-day n=1 is that the window might just have been quiet. It wasn't quiet afterwards: over the next 8 days (Aug 4–11) subagent dispatch went from **87 to 545 assistant turns per day — 6.3× the volume** — and the routing held. Fable leaked **zero** times. The volume-held counterfactual for that window: $52.24 actual against $108.75 at the pre-routing mix (−52%), and $54.20 at the hardened mix — **3.6% apart**. That last number is the real finding: the system is done, what's left is coins.
 
@@ -144,7 +183,7 @@ One figure in that window is a trap, and it's worth showing rather than burying.
 
 The last thing this window changed is the framing. Subagents were 21% of in+out token flow but only **10% of spend** ($413 of $4,200 across those 8 days) — the gap between those two numbers *is* the routing working. The other 90% sits on the main thread, where a frontier model is a deliberate choice rather than an unaudited default. That's the honest ceiling: this repo makes delegated work cheap, and has nothing to say about what you pick for yourself.
 
-## Known gaps
+## Known gaps (v1)
 
 - **Routing savings ≠ delegation savings.** Every number above measures *which model your subagents run on* — not whether spawning them beat doing the work inline. Those two can point opposite ways: a paired A/B on another CLI found a frontier root plus one cheap explorer child came out **8% more expensive** than the root working alone, because the child was cheap but the root never stopped redoing the work. This repo doesn't claim delegation pays for itself; it claims that once you delegate, you shouldn't do it at frontier rates. [Audit §6](audit/audit-commands.md) catches that failure mode on transcripts you already have, no A/B needed (mine: 85:1 compression, 2.9% re-exploration).
 - **In-workflow `agent()` calls bypass the Agent hook** (PreToolUse never fires for them). Soft-constrained by the policy block only. Measured leakage: 7 calls ≈ $6 over 19 days — not worth a gate.

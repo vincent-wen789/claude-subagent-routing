@@ -1,6 +1,6 @@
 ---
 name: judge
-description: Judgment agent — the judgment tier, with opus pinned in frontmatter to close the inheritance leak. Independent review, design critique, architecture / cross-file review, open-ended design, multi-source research — anything that needs independent judgment rather than execution or recon. For light judgment (single-file review, copy review, two-way choices, small verifiable research), spawn it with an explicit model sonnet downgrade; with no model param it defaults to opus, so a forgotten tag can never leak to the main-thread model.
+description: Judgment agent — the independent-perspective tier, with opus pinned in frontmatter to close the inheritance leak. Cold reads, persona audits, blind evaluation, independent review, architecture / cross-file review, multi-source research — anything that needs an un-anchored view rather than execution or recon. For cold reads, single-file review and copy review, spawn it with an explicit model sonnet downgrade; multi-source synthesis and architecture review stay on the default opus (errors there are silent). With no model param it defaults to opus, so a forgotten tag can never leak to the main-thread model.
 model: opus
 ---
 

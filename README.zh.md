@@ -2,11 +2,45 @@
 
 [English](README.md) | **中文** | [日本語](README.ja.md)
 
+> **2026-10-28 起是 v2**：默认主线程自己干，只按上下文、只在三种情况下派子 agent。[改了什么、为什么改 ↓](#v2) 标 **v1** 的各节（2026-07-09 → 10-27）作为数据和方法论保留。
+
 Claude Code 子 agent 的静态模型路由：一张策略表、两个钉死模型的 agent、一个 deny hook（逻辑约 15 行）。没有分类器、没有代理层、没有框架——外加 26 天单人生产实测（n=1）。
 
 对 Claude Code 这个角落还不熟？一口气版本：Claude Code 干活时会悄悄雇一些帮手 AI——*子 agent*——去做搜代码、批量改文件这类边角活。默认情况下，每个帮手都按你主会话的模型计费。主模型贵，就等于拿高级工程师的时薪付实习生的活，而且屏幕上什么都不会提示。这个 repo 把实习生的活钉到实习生价位的模型上，并在失误面前加一道闸。你的用法不变；账单变。
 
-**账单先行**（7/3–8/3：6 天路由前基线 + 26 天系统运行——497M 子 agent token，单用户混合真实负载；细账见[审计命令](audit/audit-commands.md)）：
+<a id="v2"></a>
+## v2（2026-10-28）：默认主线程自己干，按上下文才派
+
+**现在的规则**：主线程自己干。只有三种情况才自动派子 agent，派时当场钉死模型档：
+
+| 情况 | 长什么样 | Agent · 档位 |
+|---|---|---|
+| 1. 独立视角 | 冷读、画像 / persona 审计、盲评、review | `judge`——冷读、单文件审、文案审显式标 sonnet；多源综合和架构 / 跨文件 review 走它钉死的 opus |
+| 2. 并行扇出 | ≥3 路互不依赖、每路回紧凑结果（分路调研、分块打标） | 整批同一档，派之前先定档 |
+| 3. 大批量机械活 | spec 一两句说得清、产出远大于 spec、不需要主线程上下文（批量改名、格式整理、分块打标、搬运） | `worker`——纯体力活显式标 haiku |
+
+**不派**：和主线程上下文强耦合的实现活——刚讨论完方案就改代码、改原型。**拿不准**：小活主线程直接干；大活先问用户一句，带上倾向。需要 shell 或大范围搜索的只读侦察交给内置 Explore agent 并标 haiku；`scout` 归档。
+
+「小活直接干、大活才问」取代了最初的提案「拿不准都问」：拿不准时留在主线程，最坏只是一段产出贵一倍，打断用户更贵。规则特意写成可对照的清单——v1 的轻 / 重判断分流交给裁量时漂过（同一批调研被拆成两档派）。
+
+**为什么改**
+
+- **触发**：Anthropic〈[Building agents: when to fold subagents into your main agent loop](https://claude.com/resources/articles/building-agents-when-to-fold-subagents-into-your-main-agent-loop)〉（Diane Sarkis，2026-10-22）。核心论点：按问题类型拆 agent 会像传话游戏一样失真，该按上下文拆。子 agent 只在三种情况下站得住：需要验证 / 独立视角、并行扇出、防主线程上下文被撑爆。文章不讲大小模型路由，下面的价格账是我自己的。
+- **价差缩了。** v1 设计时主线程跑 Fable（$10/$50，Sonnet 的 5 倍）；现在主线程是 Opus 5.5（$4/$20，Sonnet 的 2 倍）。外包机械活的省钱空间少了一半多，交接成本——写 spec、子 agent 从零读上下文、主线程复核——一分没少。
+- **v1 的账只算了一边。** 42 天少烧的 48%（$1,166）只算了子 agent 单价，交接、复核、返工都没算，质量也一直没有客观仪表（见下文「已知开口」）。
+- **策略段越堆越像 Frankenprompt（缝合怪 prompt）**——档位表、例外、带日期的教训全塞在一节里。
+
+**v1 派发数据说了什么**（近 21 个活跃日共 691 次派发，按关键词粗分，类别有重叠）：冷读 / 画像 / 视觉审 ~287、盲评 / review ~108、多源调研 ~77——本来就是按上下文拆的，保留。`worker` ~102：约一半是分块批量（合理），另一半是主线程讨论完方案再交出去的实现活（`Implement twostep v2`、`Rebuild flow mock`）——正是文章说的按类型拆。`scout`：17 次。
+
+**沿用 v1 的**：hook 照样打回没标 model 的派发，`judge` 照样在 frontmatter 钉 opus，便宜档砸一次照样直接升一档——绝不同档重试。
+
+**本 repo 的改动**：[策略段](policy/claude-md-block.md)重写（v1 留在 [policy/claude-md-block-v1.md](policy/claude-md-block-v1.md)）；[`worker`](agents/worker.md) 收窄到大批量机械活；`scout` 移到 [agents/archive/](agents/archive/scout.md)；[hook](hooks/agent-model-guard.sh) 的拒绝信息改成先问「该不该派」再给路由。
+
+**v2 给方法论加的一条**：算总账——主线程加子 agent 加返工——不只看子 agent 单价。
+
+**复测（2026-11-11 前后）**：同一套 jq 口径，这次**主线程和子 agent 合算一本账**，再加返工次数（升档重派 + 主线程修子 agent 产出），和 v1 的 8/12–8/19 窗口对比。总账变贵且返工没降，就回退 `worker` 那条。
+
+**v1 账单**（7/3–8/3：6 天路由前基线 + 26 天系统运行——497M 子 agent token，单用户混合真实负载；细账见[审计命令](audit/audit-commands.md)）：
 
 | 指标 | 路由前 (7/3–7/8) | 钉档期 (7/9–7/15) | 加固期 (7/16–8/3) |
 |---|---|---|---|
@@ -42,13 +76,15 @@ Claude Code 的子 agent 在 agent 定义没钉模型、派发时也没显式传
 
 所以：框架层路由但不强制，hook 层强制但带分类器，审计层测量但不路由。这个 repo 是缺失的那个组合——**策略 + 强制 + 测量，无分类器**——外加账单。
 
-## 系统本体：三层防线 × 二维路由
+## v1 系统本体：三层防线 × 二维路由
 
-**第一层——路由表**（[policy/claude-md-block.md](policy/claude-md-block.md)），粘进 `CLAUDE.md`：
+*v1，2026-07-09 → 10-27。现行策略是 [v2](#v2)；下面是被它取代的按角色路由，也是上面账单量的那套。*
+
+**第一层——路由表**（[policy/claude-md-block-v1.md](policy/claude-md-block-v1.md)），粘进 `CLAUDE.md`：
 
 | 活的类型 | Agent | 模型 | Effort |
 |---|---|---|---|
-| 只读侦察（扫/搜/读/汇总） | [`scout`](agents/scout.md) | haiku | low |
+| 只读侦察（扫/搜/读/汇总） | [`scout`](agents/archive/scout.md)（v2 已归档） | haiku | low |
 | 机械执行（方案已定，只差动手） | [`worker`](agents/worker.md) | sonnet | medium |
 | 判断（review / 设计 / 调研） | [`judge`](agents/judge.md) | opus（钉死） | 会话 |
 
@@ -60,13 +96,13 @@ Claude Code 的子 agent 在 agent 定义没钉模型、派发时也没显式传
 
 让便宜档保持诚实的升级规则：便宜档砸一次，直接升一档重派。绝不同档重试。
 
-## 安装
+## 安装（v2）
 
-四个文件、一条 settings 配置、一段策略文本。在本 repo 的 clone 里执行（hook 依赖 `jq`——先 `command -v jq` 确认）：
+三个文件、一条 settings 配置、一段策略文本。在本 repo 的 clone 里执行（hook 依赖 `jq`——先 `command -v jq` 确认）：
 
 ```bash
 mkdir -p ~/.claude/agents ~/.claude/hooks
-cp agents/scout.md agents/worker.md agents/judge.md ~/.claude/agents/
+cp agents/worker.md agents/judge.md ~/.claude/agents/
 cp hooks/agent-model-guard.sh ~/.claude/hooks/ && chmod +x ~/.claude/hooks/agent-model-guard.sh
 ```
 
@@ -93,32 +129,35 @@ cp hooks/agent-model-guard.sh ~/.claude/hooks/ && chmod +x ~/.claude/hooks/agent
 
 - **装完重启 Claude Code**——agent 定义在会话启动时加载。
 - **`CLAUDE_CODE_SUBAGENT_MODEL` 保持不设**——它会全局覆盖 frontmatter，静默废掉所有钉死。
-- **Agent 名按项目优先解析。** 项目里定义了自己的 `scout`/`worker`/`judge` 会盖过 `~/.claude/agents/`。保持这几个名字在你环境里唯一；自己加钉死 agent 的话，同步扩 hook 的放行名单（`scout|worker|judge|fork`）。
+- **从 v1 升级：** 重新拷 `worker.md`、hook 和策略段。`scout` 留着（hook 仍放行它）或删掉都行——v2 的侦察走 Explore 并显式标 haiku。
+- **Agent 名按项目优先解析。** 项目里定义了自己的 `worker`/`judge` 会盖过 `~/.claude/agents/`。保持这几个名字在你环境里唯一；自己加钉死 agent 的话，同步扩 hook 的放行名单（`scout|worker|judge|fork`）。
 - **Hook 校验的是派发请求，不是最终解析出的模型。** 它焊死的是「忘了标」这个失误面——在我的测量里这就是泄漏的全部——不是所有想得到的配置错误。
 
 冒烟测试：任意会话里，让 Claude 派一个**不带** model 的 general-purpose 子 agent。预期：派发被 deny，拒绝理由里是路由表，Claude 带上模型重新派发。测试于 Claude Code 2.1.210，2026 年 8 月。一直不 deny：查 `jq` 装没装、settings.json 里的脚本路径能不能解析、matcher 是否精确为 `Agent`——hook 的 payload schema 会随版本漂移，离 2.1.210 太远就对照 changelog。deny 了但 Claude 不重派，那是模型的服从性问题，不是 hook 的。失败模式有意设计为开放：hook 自己崩了会报错、派发照常进行——最坏情况就是回到默认行为，不会把会话搞死。
 
 安装到此为止。没有守护进程、没有代理、没有 npm。
 
-## 装完之后：日常会变什么
+## 装完之后：日常会变什么（v2）
 
-你跟 Claude 说话的方式一点不变。照常提需求，策略段替你管派工：
+你跟 Claude 说话的方式一点不变。照常提需求，策略段替你判断到底要不要派：
 
-- 「retry 逻辑定义在哪？」→ Claude 派 `scout`——Haiku、只读——带回 file:line。
-- 「把这个重命名全仓套一遍」→ `worker`——Sonnet、只动手、不做设计决定。
-- 「好好 review 一下这个 diff」→ `judge`——frontmatter 已钉 opus；轻量 review 显式降档 sonnet。
+- 「retry 逻辑定义在哪？」→ 主线程自己搜。要扫一大片代码库才答得出，就派 Explore 并标 haiku，带回 file:line。
+- 「按我们刚定的方案实现」→ 主线程。上下文都在它那，交出去等于再讲一遍。
+- 「把这个重命名全仓套一遍」→ `worker`——Sonnet（纯体力活标 haiku），一句话 spec，不做设计决定。
+- 「好好 review 一下这个 diff」→ `judge`——frontmatter 已钉 opus；冷读和轻量 review 显式标 sonnet。
+- 「把这四家竞品调研一遍」→ 四个 `judge` 并行，整批同一档。
 
-想手动点名也随时可以：「先让 scout 把 auth 模块摸一遍」「让 worker 按 spec 改」——agent 名会变成你和 Claude 之间的共用词汇。
+想手动点名也随时可以：「让 judge 冷读一遍」「让 worker 按 spec 改」——agent 名会变成你和 Claude 之间的共用词汇。
 
 闸门触发时，转录里长这样——是打回重来，不是报错：
 
-> agent-model-guard: this Agent call has no model and would silently inherit the main-thread model. Re-issue it per the routing table: judgment → judge (opus pinned; tag sonnet for light judgment), mechanical execution → worker, read-only recon → scout. …
+> agent-model-guard: this Agent call has no model and would silently inherit the main-thread model. First check whether it should be delegated at all (default: the main thread does it). If it should, re-issue per the routing table: independent perspective → judge (opus pinned; tag sonnet for cold reads), large-batch mechanical work → worker, recon → Explore with model haiku. …
 
-Claude 读完，带上模型重新派发，活照常干。大多数时候你会发现它*从不*触发——这正是目的。
+Claude 读完，要么自己干，要么带上模型重新派发，活照常干。大多数时候你会发现它*从不*触发——这正是目的。
 
-每月一次（或改完配置之后），重跑 [audit §2](audit/audit-commands.md) 看两个数：前沿模型在子 agent token 里的占比（除非你点名，应该 ≈0）、模型构成有没有往你预期的方向走。
+每月一次（或改完配置之后），重跑 [audit §2](audit/audit-commands.md) 看两个数：前沿模型在子 agent token 里的占比（除非你点名，应该 ≈0）、模型构成有没有往你预期的方向走。v2 起再加跑 [§5](audit/audit-commands.md)——子 agent 占全部流量的比例：现在要问的是总账，不只是子 agent 那一块。
 
-## 方法论（我会再做一遍的部分）
+## 方法论（v1——我会再做一遍的部分）
 
 1. **审计默认值。** 每个「继承/默认」行为都藏着一条环境一变就静默失效的假设。省钱的第一刀不是换便宜模型，是找出正在静默生效的昂贵默认值。
 2. **钉死胜过裁量。** 这些钱是靠删掉决定省下来的，不是靠做出更好的决定。需要人记得的规则不是规则。
@@ -132,11 +171,11 @@ Claude 读完，带上模型重新派发，活照常干。大多数时候你会�
 - **不加更细档位。** 加固之后，剩余空间就是捡硬币。每加一档都在为几美分的收益增加分类负担和误路由面。
 - **不做跨厂商代理。** [claude-code-router](https://github.com/musistudio/claude-code-router) 这类工具解决的是另一个问题（换后端）。本系统留在单一厂商单一订阅内——这正是上面数字干净的原因。
 
-## 更新（2026-08-09）：最后一个靠纪律撑着的档也钉死了
+## 更新（2026-08-09，v1）：最后一个靠纪律撑着的档也钉死了
 
 上面路由表的判断行，原本写的是「general-purpose + 记得标 opus」——三行里唯一靠派单纪律（外加 hook 兜底）而不是钉死定义撑着的一档。暴露它的是一次移植：把这套策略搬到第二个 CLI（Codex Desktop，三个原生 custom-agent TOML）。移植版把每个角色——连通用 fallback 都算上——全部钉进了配置，两边一对比，这处不对称就藏不住了。于是修法反哺回来：[`judge`](agents/judge.md) 在 frontmatter 里钉死 opus，轻判断变成同一个 agent 显式降档 sonnet，hook 放行名单多了一个名字。方法论第 2 条「钉死胜过自觉」，现在对三行全部成立。
 
-## 更新（2026-08-11）：又过了 8 天，用量涨到 6.3 倍
+## 更新（2026-08-11，v1）：又过了 8 天，用量涨到 6.3 倍
 
 26 天 n=1 最容易被质疑的一点是：会不会刚好那段时间活少。后来并不少——接下来 8 天（8/4–8/11）子 agent 派发从每天 87 个 assistant turn 涨到 **545 个，6.3 倍用量**，路由稳住了。Fable **零泄漏**。这个窗口的 volume-held 反事实：实际 $52.24，按路由前配比要 $108.75（−52%），按加固期配比 $54.20——**只差 3.6%**。最后这个数才是真结论：系统已经到顶，剩下的是捡硬币。
 
@@ -144,7 +183,7 @@ Claude 读完，带上模型重新派发，活照常干。大多数时候你会�
 
 这个窗口改变的最后一件事是视角。那 8 天里子 agent 占 in+out token 流量的 21%，却只占 **10% 的支出**（$4,200 里的 $413）——这两个数之间的差距本身就是路由在生效。剩下 90% 在主线程，那里用旗舰模型是有意的选择，不是没人审计的默认值。这就是诚实的天花板：这个 repo 让派出去的活变便宜，至于你自己用什么，它管不着。
 
-## 已知开口
+## 已知开口（v1）
 
 - **路由省钱 ≠ 委派省钱。** 上面每一个数字量的都是*子 agent 跑在哪个模型上*，不是「派出去」比「自己干」更省。这两件事可能指向相反方向：另一个 CLI 上的配对 A/B 实测发现，一个旗舰 root 加一个便宜的 explorer 子 agent，总账比 root 自己干**贵 8%**——子 agent 确实便宜，但 root 从没停止重做同样的活。这个 repo 不声称委派本身划算，它声称的是：既然你要派，就别按旗舰价派。[Audit §6](audit/audit-commands.md) 能在你已有的转录上抓出这个失败模式，不用跑 A/B（我这边：压缩比 85:1，重新探索率 2.9%）。
 - **Workflow 内的 `agent()` 调用绕过 Agent hook**（PreToolUse 对它们不触发）。只有策略文本软约束。实测泄漏：19 天 7 次 ≈ $6——不值得建闸。

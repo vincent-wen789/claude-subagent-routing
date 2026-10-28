@@ -1,6 +1,6 @@
 ---
 name: worker
-description: Execution worker — the cheap execution layer of the orchestrator pattern. Takes explicit instructions for mechanical work — batch edits, running commands, writing code to spec, formatting. Makes no design decisions; judgment stays in the main thread. Anything "already thought through, just needs hands" goes here.
+description: Execution worker — the cheap execution layer (narrowed in v2). Only takes large-batch mechanical work — the spec fits in a sentence or two, output dwarfs the spec, no main-thread context needed: batch renames, reformatting, chunked labeling, moving content, parallel chunked execution. Makes no design decisions. Implementation work tightly coupled to main-thread context (code or prototype changes right after the plan was discussed) does not come here — the main thread does it.
 model: sonnet
 effort: medium
 ---
